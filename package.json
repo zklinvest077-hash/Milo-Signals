@@ -1,0 +1,13 @@
+{
+  "name": "milo-signals",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Telegram AI signal parser: raw signal channels -> clean Cornix-formatted signals",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

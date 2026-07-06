@@ -1,0 +1,35 @@
+{
+  // Конфигурация Cloudflare Worker.
+  // ЕДИНСТВЕННОЕ, что нужно поменять руками: "id" у KV namespace ниже.
+  "name": "milo-signals",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-01",
+
+  "observability": {
+    "enabled": true
+  },
+
+  // Хранилище памяти бота (история сообщений, ссылки на отправленные сигналы).
+  // Создай KV namespace в Cloudflare (Storage & Databases -> KV) и вставь его ID сюда.
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // Несекретные настройки. Их можно переопределить в дашборде Cloudflare
+  // (Settings -> Variables and Secrets), там же задаются ID каналов.
+  "vars": {
+    // Модель на OpenRouter (должна поддерживать картинки, если нужны скриншоты)
+    "MODEL": "google/gemini-2.5-flash",
+    // Минимальная уверенность модели (0..1), ниже которой сигнал НЕ публикуется,
+    // а отправляется тебе в личку на проверку
+    "MIN_CONFIDENCE": "0.65",
+    // Если "true" — сигналы без стоп-лосса не публикуются, а идут тебе в личку.
+    // Поставь "false", если настроил дефолтный SL в самом Cornix.
+    "REQUIRE_SL": "true",
+    // Сколько последних сообщений канала держать в памяти как контекст
+    "HISTORY_SIZE": "15"
+  }
+}
