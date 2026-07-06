@@ -1,7 +1,7 @@
 {
   // Конфигурация Cloudflare Worker.
   // ЕДИНСТВЕННОЕ, что нужно поменять руками: "id" у KV namespace ниже.
-  "name": "milo-signals",
+  "name": "milosignals",
   "main": "src/index.js",
   "compatibility_date": "2026-06-01",
 
