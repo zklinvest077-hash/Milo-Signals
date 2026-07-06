@@ -82,6 +82,25 @@ async function handleRequest(request, env, ctx) {
       });
     }
 
+    // Журнал последних действий бота: /debug?secret=<WEBHOOK_SECRET>
+    if (url.pathname === "/debug") {
+      const expected = String(env.WEBHOOK_SECRET || "").trim();
+      const given = String(url.searchParams.get("secret") || "").trim();
+      if (!expected || given !== expected) {
+        return new Response("forbidden", { status: 403 });
+      }
+      const log = (await env.KV.get("debuglog", "json")) || [];
+      const sources = String(env.SOURCE_CHANNEL_IDS || "").trim() || "(пусто!)";
+      const target = String(env.TARGET_CHANNEL_ID || "").trim() || "(пусто!)";
+      const admin = String(env.ADMIN_CHAT_ID || "").trim() || "(пусто)";
+      const head =
+        `Настройки: SOURCE_CHANNEL_IDS=${sources} | TARGET_CHANNEL_ID=${target} | ADMIN_CHAT_ID=${admin}\n` +
+        `Журнал (новые снизу):\n\n`;
+      return new Response(head + (log.length ? log.join("\n") : "(журнал пуст — бот ещё не получал сообщений)") + "\n", {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
     // Главная страница: статус настроек (без значений, только заполнено/нет)
     const check = (v) => (String(v || "").trim() ? "✅ задано" : "❌ НЕ задано");
     const status = [
@@ -111,6 +130,9 @@ async function handleUpdate(update, env) {
   const isEdit = Boolean(update.edited_channel_post);
   const chatId = String(msg.chat.id);
   const text = msg.text || msg.caption || "";
+  const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
+
+  await logEvent(env, `получено: чат ${chatId} («${msg.chat.title || "личка"}»), текст «${text.slice(0, 60)}»${hasPhoto ? " +фото" : ""}${isEdit ? " (ред.)" : ""}`);
 
   // Служебная команда: узнать ID любого чата, где есть бот
   if (text.trim().startsWith("/id")) {
@@ -125,14 +147,19 @@ async function handleUpdate(update, env) {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!sources.includes(chatId)) return;
+  if (!sources.includes(chatId)) {
+    await logEvent(env, `пропущено: чат ${chatId} не входит в SOURCE_CHANNEL_IDS (${sources.join(",") || "пусто!"})`);
+    return;
+  }
 
-  const hasPhoto = Array.isArray(msg.photo) && msg.photo.length > 0;
   if (!text && !hasPhoto) return;
 
   // Защита от дублей (авто-форвардеры любят слать одно и то же)
   const dedupKey = `dedup:${chatId}:${msg.message_id}:${await sha1(text)}`;
-  if (await env.KV.get(dedupKey)) return;
+  if (await env.KV.get(dedupKey)) {
+    await logEvent(env, `пропущено: дубликат сообщения ${msg.message_id}`);
+    return;
+  }
   await env.KV.put(dedupKey, "1", { expirationTtl: 3600 });
 
   const sourceName =
@@ -169,9 +196,12 @@ async function handleUpdate(update, env) {
   });
 
   if (!decision) {
+    await logEvent(env, `ошибка: модель вернула нечитаемый ответ`);
     await notifyAdmin(env, `⚠️ Модель вернула нечитаемый ответ на сообщение из «${sourceName}»:\n\n${text.slice(0, 300)}`);
     return;
   }
+
+  await logEvent(env, `решение ИИ: ${JSON.stringify(decision).slice(0, 300)}`);
 
   if (decision.action === "ignore") return;
 
@@ -251,6 +281,8 @@ async function publishSignal(env, sourceChatId, sig, sourceName) {
     disable_web_page_preview: true,
   });
 
+  await logEvent(env, res.ok ? `✅ сигнал опубликован в ${env.TARGET_CHANNEL_ID}: ${dir} ${pretty}` : `❌ Telegram отказал в публикации: ${JSON.stringify(res).slice(0, 300)}`);
+
   if (res.ok) {
     // Запоминаем message_id сигнала, чтобы потом отвечать на него командами
     await env.KV.put(
@@ -294,6 +326,7 @@ async function publishUpdate(env, sourceChatId, sig, sourceName, originalText) {
   });
 
   if (res.ok) {
+    await logEvent(env, `✅ команда «${command}» по ${symbol} отправлена реплаем`);
     await appendHistory(env, sourceChatId, {
       t: new Date().toISOString(),
       from: "BOT",
@@ -487,12 +520,27 @@ function parseJsonLoose(raw) {
 }
 
 async function notifyAdmin(env, text) {
-  if (!env.ADMIN_CHAT_ID) return;
-  await tg(env, "sendMessage", {
-    chat_id: env.ADMIN_CHAT_ID,
+  await logEvent(env, `в личку админу: ${text.slice(0, 200)}`);
+  if (!String(env.ADMIN_CHAT_ID || "").trim()) return;
+  const res = await tg(env, "sendMessage", {
+    chat_id: String(env.ADMIN_CHAT_ID).trim(),
     text: text.slice(0, 4000),
     disable_web_page_preview: true,
   });
+  if (!res.ok) {
+    await logEvent(env, `❌ не смог написать админу (нажми Start у бота в личке!): ${JSON.stringify(res).slice(0, 200)}`);
+  }
+}
+
+async function logEvent(env, text) {
+  try {
+    const log = (await env.KV.get("debuglog", "json")) || [];
+    log.push(`[${new Date().toISOString().slice(5, 19)}] ${text}`);
+    while (log.length > 40) log.shift();
+    await env.KV.put("debuglog", JSON.stringify(log), { expirationTtl: 60 * 60 * 24 });
+  } catch (e) {
+    console.error("logEvent error:", e);
+  }
 }
 
 async function reportError(env, err, update) {
