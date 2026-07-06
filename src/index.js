@@ -405,7 +405,7 @@ async function askModel(env, { history, sourceName, text, isEdit, imageDataUrl }
       "X-Title": "Milo Signals",
     },
     body: JSON.stringify({
-      model: env.MODEL || "google/gemini-2.5-flash",
+      model: env.MODEL || "openai/gpt-4o-mini",
       temperature: 0.1,
       max_tokens: 1000,
       messages: [
