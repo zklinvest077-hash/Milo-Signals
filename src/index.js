@@ -23,11 +23,25 @@
 
 export default {
   async fetch(request, env, ctx) {
+    try {
+      return await handleRequest(request, env, ctx);
+    } catch (e) {
+      console.error("fetch error:", e);
+      return new Response(
+        `Ошибка воркера: ${e?.message || e}\n\nПроверь страницу /, там видно, какие настройки заполнены.`,
+        { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } }
+      );
+    }
+  },
+};
+
+async function handleRequest(request, env, ctx) {
     const url = new URL(request.url);
 
     if (url.pathname === "/webhook" && request.method === "POST") {
       const secret = request.headers.get("x-telegram-bot-api-secret-token");
-      if (!env.WEBHOOK_SECRET || secret !== env.WEBHOOK_SECRET) {
+      const expected = String(env.WEBHOOK_SECRET || "").trim();
+      if (!expected || secret !== expected) {
         return new Response("forbidden", { status: 403 });
       }
       const update = await request.json();
@@ -40,12 +54,23 @@ export default {
 
     // Открой в Safari: https://<worker>.workers.dev/setup?secret=<WEBHOOK_SECRET>
     if (url.pathname === "/setup") {
-      if (url.searchParams.get("secret") !== env.WEBHOOK_SECRET) {
-        return new Response("forbidden", { status: 403 });
+      const expected = String(env.WEBHOOK_SECRET || "").trim();
+      const given = String(url.searchParams.get("secret") || "").trim();
+      if (!expected || given !== expected) {
+        return new Response(
+          "forbidden: секрет в ссылке не совпадает с WEBHOOK_SECRET в настройках воркера",
+          { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } }
+        );
+      }
+      if (!String(env.BOT_TOKEN || "").trim()) {
+        return new Response("Ошибка: секрет BOT_TOKEN не задан в настройках воркера.", {
+          status: 500,
+          headers: { "content-type": "text/plain; charset=utf-8" },
+        });
       }
       const res = await tg(env, "setWebhook", {
         url: `${url.origin}/webhook`,
-        secret_token: env.WEBHOOK_SECRET,
+        secret_token: expected,
         allowed_updates: ["message", "channel_post", "edited_channel_post"],
         drop_pending_updates: true,
       });
@@ -57,11 +82,23 @@ export default {
       });
     }
 
-    return new Response("Milo Signals bot is running.\n", {
+    // Главная страница: статус настроек (без значений, только заполнено/нет)
+    const check = (v) => (String(v || "").trim() ? "✅ задано" : "❌ НЕ задано");
+    const status = [
+      "Milo Signals bot is running.",
+      "",
+      `BOT_TOKEN:          ${check(env.BOT_TOKEN)}`,
+      `OPENROUTER_API_KEY: ${check(env.OPENROUTER_API_KEY)}`,
+      `WEBHOOK_SECRET:     ${check(env.WEBHOOK_SECRET)}`,
+      `SOURCE_CHANNEL_IDS: ${check(env.SOURCE_CHANNEL_IDS)}`,
+      `TARGET_CHANNEL_ID:  ${check(env.TARGET_CHANNEL_ID)}`,
+      `ADMIN_CHAT_ID:      ${check(env.ADMIN_CHAT_ID)}`,
+      `KV storage:         ${env.KV ? "✅ подключено" : "❌ НЕ подключено"}`,
+    ].join("\n");
+    return new Response(status + "\n", {
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
-  },
-};
+}
 
 // ---------------------------------------------------------------------------
 // Обработка входящих сообщений
@@ -358,8 +395,15 @@ async function askModel(env, { history, sourceName, text, isEdit, imageDataUrl }
 // Вспомогательные функции
 // ---------------------------------------------------------------------------
 
+function jsonResponse(obj) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
 async function tg(env, method, params) {
-  const resp = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/${method}`, {
+  const token = String(env.BOT_TOKEN || "").trim();
+  const resp = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -374,7 +418,7 @@ async function fetchPhotoAsDataUrl(env, photos) {
     const fileInfo = await tg(env, "getFile", { file_id: photo.file_id });
     if (!fileInfo.ok) return null;
     const fileResp = await fetch(
-      `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${fileInfo.result.file_path}`
+      `https://api.telegram.org/file/bot${String(env.BOT_TOKEN || "").trim()}/${fileInfo.result.file_path}`
     );
     if (!fileResp.ok) return null;
     const buf = await fileResp.arrayBuffer();
