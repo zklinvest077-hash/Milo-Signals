@@ -244,6 +244,23 @@ async function publishSignal(env, sourceChatId, sig, sourceName) {
     entries = [price];
   }
 
+  const dirIsShort = String(sig.direction).toUpperCase() === "SHORT";
+
+  // Фиксированные TP/SL в процентах от входа (перекрывают цифры автора сигнала)
+  if (String(env.OVERRIDE_TPSL || "false") === "true") {
+    const tpPct = parseFloat(env.TP_PERCENT || "0.9") / 100;
+    const slPct = parseFloat(env.SL_PERCENT || "2.5") / 100;
+    const nums = entries.map((e) => parseFloat(e)).filter((n) => isFinite(n) && n > 0);
+    if (nums.length === 0) {
+      await notifyAdmin(env, `⚠️ Не смог разобрать цену входа, сигнал пропущен:\n${JSON.stringify(sig)}`);
+      return;
+    }
+    const base = nums.reduce((a, b) => a + b, 0) / nums.length;
+    const sign = dirIsShort ? -1 : 1;
+    sig.targets = [roundPrice(base * (1 + sign * tpPct), nums)];
+    sig.stop = roundPrice(base * (1 - sign * slPct), nums);
+  }
+
   const requireSl = String(env.REQUIRE_SL || "true") === "true";
   const hasStop = sig.stop !== undefined && sig.stop !== null && sig.stop !== "";
   if (requireSl && !hasStop) {
@@ -255,7 +272,7 @@ async function publishSignal(env, sourceChatId, sig, sourceName) {
     return;
   }
 
-  const dir = String(sig.direction).toUpperCase() === "SHORT" ? "Short" : "Long";
+  const dir = dirIsShort ? "Short" : "Long";
   const pretty = symbol.replace(/USDT$/, "") + "/USDT";
 
   let out = `#${pretty}\n`;
@@ -371,6 +388,7 @@ Respond with ONLY a JSON object, no markdown fences, no commentary:
 
 STRICT RULES:
 1. NEVER invent price levels. Only use numbers that appear in the message, the image, or the history. If entry is implied but no price given, use "market". If no targets/stop given, omit those fields.
+1b. The system assigns take-profit and stop-loss automatically, so a missing TP/SL in the source must NOT lower your confidence. What matters most: symbol, direction, and entry price (or "market").
 2. "ignore" for: analysis without a call to action, memes, ads, PR, results/recaps of past trades, generic hype without a ticker, duplicate of a signal already posted by BOT (check history for "[опубликован сигнал" entries).
 3. "update" only when there is an existing trade in history to update.
 4. If the message is an edited version of an earlier message and adds no new actionable info, "ignore".
@@ -483,6 +501,20 @@ async function appendHistory(env, chatId, entry) {
   await env.KV.put(`history:${chatId}`, JSON.stringify(history), {
     expirationTtl: 60 * 60 * 24 * 7,
   });
+}
+
+// Округляем расчётную цену с точностью чуть выше, чем у цены входа
+// (например, вход 79 -> 79.71, вход 0.0812 -> 0.081931)
+function roundPrice(value, referencePrices) {
+  const decimals = Math.max(
+    ...referencePrices.map((p) => {
+      const s = String(p);
+      const i = s.indexOf(".");
+      return i === -1 ? 0 : s.length - i - 1;
+    })
+  );
+  const d = Math.min(decimals + 2, 8);
+  return parseFloat(value.toFixed(d));
 }
 
 function normalizeSymbol(symbol) {
