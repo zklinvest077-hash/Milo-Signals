@@ -312,9 +312,47 @@ async function publishSignal(env, sourceChatId, sig, sourceName) {
       from: "BOT",
       text: `[опубликован сигнал в Cornix-канал] ${dir.toUpperCase()} ${pretty}, entries=${entries.join("/")}, targets=${(sig.targets || []).join("/")}, stop=${sig.stop ?? "-"}`,
     });
+    await sendManualCard(env, { pretty, dir, entries, targets: sig.targets, stop: sig.stop, isMarket: sig.entries === "market" });
   } else {
     await notifyAdmin(env, `❌ Telegram не принял сигнал: ${JSON.stringify(res)}`);
   }
+}
+
+// Карточка ручного исполнения для проп-счёта (шлётся в личку, если задан PROP_ACCOUNT_SIZE).
+// Размер позиции считается от риска на сделку: notional = риск$ / дистанция до стопа.
+async function sendManualCard(env, { pretty, dir, entries, targets, stop, isMarket }) {
+  const account = parseFloat(env.PROP_ACCOUNT_SIZE || "");
+  if (!isFinite(account) || account <= 0) return;
+
+  const riskPct = parseFloat(env.PROP_RISK_PERCENT || "1");
+  const leverage = parseFloat(env.PROP_LEVERAGE || "5");
+  const entry = entries.map((e) => parseFloat(e)).reduce((a, b) => a + b, 0) / entries.length;
+
+  let card = `📲 ПРОП — ручное исполнение\n\n`;
+  card += `${pretty} — ${dir.toUpperCase()}\n`;
+  card += `Вход: ${entries.join(" / ")}${isMarket ? " (по рынку)" : " (лимит)"}\n`;
+  if (Array.isArray(targets) && targets.length) card += `TP: ${targets.join(" / ")}\n`;
+  if (stop !== undefined && stop !== null && stop !== "") card += `SL: ${stop}\n`;
+
+  const stopNum = parseFloat(stop);
+  if (isFinite(stopNum) && isFinite(entry) && entry > 0) {
+    const slDist = Math.abs(entry - stopNum) / entry;
+    if (slDist > 0) {
+      const riskUsd = (account * riskPct) / 100;
+      const notional = riskUsd / slDist;
+      const margin = notional / leverage;
+      const qty = notional / entry;
+      card += `\nРазмер (счёт $${account}, риск ${riskPct}% = $${riskUsd.toFixed(2)}):\n`;
+      card += `• Объём позиции: $${notional.toFixed(2)} (~${qty.toFixed(4)} монет)\n`;
+      card += `• Маржа при плече ${leverage}x: $${margin.toFixed(2)}\n`;
+    }
+  }
+
+  await tg(env, "sendMessage", {
+    chat_id: String(env.ADMIN_CHAT_ID || "").trim(),
+    text: card,
+    disable_web_page_preview: true,
+  });
 }
 
 // Обновление по уже открытой сделке: ответ (reply) на исходное сообщение сигнала.
